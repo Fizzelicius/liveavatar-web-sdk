@@ -1,4 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
 import {
   ConnectionQuality,
   LiveAvatarSession,
@@ -9,9 +16,8 @@ import {
   AgentEventsEnum,
 } from "@heygen/liveavatar-web-sdk";
 import { LiveAvatarSessionMessage } from "./types";
-import { API_URL } from "../../app/api/secrets";
 
-type LiveAvatarContextProps = {
+type HeyGenContextProps = {
   sessionRef: React.RefObject<LiveAvatarSession>;
 
   isMuted: boolean;
@@ -24,10 +30,18 @@ type LiveAvatarContextProps = {
   isUserTalking: boolean;
   isAvatarTalking: boolean;
 
-  messages: LiveAvatarSessionMessage[];
+  messages: LiveAvatarSessionMessage[]; // To be implemented later for chat history
+
+  // Consent-related
+  hasConsent: boolean;
+  giveConsent: () => void;
+
+  // Session Token related
+  sessionAccessToken: string | null;
+  isSessionTokenLoading: boolean;
 };
 
-export const LiveAvatarContext = createContext<LiveAvatarContextProps>({
+export const HeyGenContext = createContext<HeyGenContextProps>({
   sessionRef: {
     current: null,
   } as unknown as React.RefObject<LiveAvatarSession>,
@@ -39,11 +53,14 @@ export const LiveAvatarContext = createContext<LiveAvatarContextProps>({
   isUserTalking: false,
   isAvatarTalking: false,
   messages: [],
+  hasConsent: false,
+  giveConsent: () => {},
+  sessionAccessToken: null,
+  isSessionTokenLoading: false,
 });
 
-type LiveAvatarContextProviderProps = {
+type HeyGenSessionProviderProps = {
   children: React.ReactNode;
-  sessionAccessToken: string;
 };
 
 const useSessionState = (sessionRef: React.RefObject<LiveAvatarSession>) => {
@@ -56,22 +73,41 @@ const useSessionState = (sessionRef: React.RefObject<LiveAvatarSession>) => {
   const [isStreamReady, setIsStreamReady] = useState<boolean>(false);
 
   useEffect(() => {
-    if (sessionRef.current) {
-      sessionRef.current.on(SessionEvent.SESSION_STATE_CHANGED, (state) => {
+    const currentSession = sessionRef.current;
+    if (currentSession) {
+      const handleStateChange = (state: SessionState) => {
         setSessionState(state);
         if (state === SessionState.DISCONNECTED) {
-          sessionRef.current.removeAllListeners();
-          sessionRef.current.voiceChat.removeAllListeners();
+          currentSession.removeAllListeners();
+          currentSession.voiceChat.removeAllListeners();
           setIsStreamReady(false);
         }
-      });
-      sessionRef.current.on(SessionEvent.SESSION_STREAM_READY, () => {
-        setIsStreamReady(true);
-      });
-      sessionRef.current.on(
+      };
+      const handleStreamReady = () => setIsStreamReady(true);
+      const handleConnectionQualityChange = (quality: ConnectionQuality) =>
+        setConnectionQuality(quality);
+
+      currentSession.on(SessionEvent.SESSION_STATE_CHANGED, handleStateChange);
+      currentSession.on(SessionEvent.SESSION_STREAM_READY, handleStreamReady);
+      currentSession.on(
         SessionEvent.SESSION_CONNECTION_QUALITY_CHANGED,
-        setConnectionQuality,
+        handleConnectionQualityChange,
       );
+
+      return () => {
+        currentSession.off(
+          SessionEvent.SESSION_STATE_CHANGED,
+          handleStateChange,
+        );
+        currentSession.off(
+          SessionEvent.SESSION_STREAM_READY,
+          handleStreamReady,
+        );
+        currentSession.off(
+          SessionEvent.SESSION_CONNECTION_QUALITY_CHANGED,
+          handleConnectionQualityChange,
+        );
+      };
     }
   }, [sessionRef]);
 
@@ -85,17 +121,22 @@ const useVoiceChatState = (sessionRef: React.RefObject<LiveAvatarSession>) => {
   );
 
   useEffect(() => {
-    if (sessionRef.current) {
-      sessionRef.current.voiceChat.on(VoiceChatEvent.MUTED, () => {
-        setIsMuted(true);
-      });
-      sessionRef.current.voiceChat.on(VoiceChatEvent.UNMUTED, () => {
-        setIsMuted(false);
-      });
-      sessionRef.current.voiceChat.on(
-        VoiceChatEvent.STATE_CHANGED,
-        setVoiceChatState,
-      );
+    const currentVoiceChat = sessionRef.current?.voiceChat;
+    if (currentVoiceChat) {
+      const handleMuted = () => setIsMuted(true);
+      const handleUnmuted = () => setIsMuted(false);
+      const handleStateChange = (state: VoiceChatState) =>
+        setVoiceChatState(state);
+
+      currentVoiceChat.on(VoiceChatEvent.MUTED, handleMuted);
+      currentVoiceChat.on(VoiceChatEvent.UNMUTED, handleUnmuted);
+      currentVoiceChat.on(VoiceChatEvent.STATE_CHANGED, handleStateChange);
+
+      return () => {
+        currentVoiceChat.off(VoiceChatEvent.MUTED, handleMuted);
+        currentVoiceChat.off(VoiceChatEvent.UNMUTED, handleUnmuted);
+        currentVoiceChat.off(VoiceChatEvent.STATE_CHANGED, handleStateChange);
+      };
     }
   }, [sessionRef]);
 
@@ -107,97 +148,165 @@ const useTalkingState = (sessionRef: React.RefObject<LiveAvatarSession>) => {
   const [isAvatarTalking, setIsAvatarTalking] = useState(false);
 
   useEffect(() => {
-    if (sessionRef.current) {
-      sessionRef.current.on(AgentEventsEnum.USER_SPEAK_STARTED, () => {
-        setIsUserTalking(true);
-      });
-      sessionRef.current.on(AgentEventsEnum.USER_SPEAK_ENDED, () => {
-        setIsUserTalking(false);
-      });
-      sessionRef.current.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
-        setIsAvatarTalking(true);
-      });
-      sessionRef.current.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => {
-        setIsAvatarTalking(false);
-      });
+    const currentSession = sessionRef.current;
+    if (currentSession) {
+      const handleUserSpeakStarted = () => setIsUserTalking(true);
+      const handleUserSpeakEnded = () => setIsUserTalking(false);
+      const handleAvatarSpeakStarted = () => setIsAvatarTalking(true);
+      const handleAvatarSpeakEnded = () => setIsAvatarTalking(false);
+
+      currentSession.on(
+        AgentEventsEnum.USER_SPEAK_STARTED,
+        handleUserSpeakStarted,
+      );
+      currentSession.on(AgentEventsEnum.USER_SPEAK_ENDED, handleUserSpeakEnded);
+      currentSession.on(
+        AgentEventsEnum.AVATAR_SPEAK_STARTED,
+        handleAvatarSpeakStarted,
+      );
+      currentSession.on(
+        AgentEventsEnum.AVATAR_SPEAK_ENDED,
+        handleAvatarSpeakEnded,
+      );
+
+      return () => {
+        currentSession.off(
+          AgentEventsEnum.USER_SPEAK_STARTED,
+          handleUserSpeakStarted,
+        );
+        currentSession.off(
+          AgentEventsEnum.USER_SPEAK_ENDED,
+          handleUserSpeakEnded,
+        );
+        currentSession.off(
+          AgentEventsEnum.AVATAR_SPEAK_STARTED,
+          handleAvatarSpeakStarted,
+        );
+        currentSession.off(
+          AgentEventsEnum.AVATAR_SPEAK_ENDED,
+          handleAvatarSpeakEnded,
+        );
+      };
     }
   }, [sessionRef]);
 
   return { isUserTalking, isAvatarTalking };
 };
 
-// const useChatHistoryState = (
-//   sessionRef: React.RefObject<LiveAvatarSession>
-// ) => {
-//   const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>([]);
-//   const currentSenderRef = useRef<MessageSender | null>(null);
-
-//   // useEffect(() => {
-//   //   if (sessionRef.current) {
-//   //     const handleMessage = (
-//   //       sender: MessageSender,
-//   //       { task_id, message }: { task_id: string; message: string }
-//   //     ) => {
-//   //       if (currentSenderRef.current === sender) {
-//   //         setMessages((prev) => [
-//   //           ...prev.slice(0, -1),
-//   //           {
-//   //             ...prev[prev.length - 1]!,
-//   //             message: [prev[prev.length - 1]!.message, message].join(""),
-//   //           },
-//   //         ]);
-//   //       } else {
-//   //         currentSenderRef.current = sender;
-//   //         setMessages((prev) => [
-//   //           ...prev,
-//   //           {
-//   //             id: task_id,
-//   //             sender: sender,
-//   //             message,
-//   //             timestamp: Date.now(),
-//   //           },
-//   //         ]);
-//   //       }
-//   //     };
-
-//   //     sessionRef.current.on(
-//   //       AgentEventsEnum.USER_SPEAK_STARTED,
-//   //       (data) => console.log("USER_SPEAK_STARTED", data)
-//   //       handleMessage(MessageSender.USER, {
-//   //   task_id: data.,
-//   //   message: data.text || "",
-//   // })
-//   //     );
-//   //   }
-//   // }, [sessionRef]);
-
-//   return { messages };
-// };
-
-export const LiveAvatarContextProvider = ({
+export const HeyGenSessionProvider = ({
   children,
-  sessionAccessToken,
-}: LiveAvatarContextProviderProps) => {
-  // Default voice chat on
-  const config = {
-    voiceChat: true,
-    apiUrl: API_URL,
-  };
-  const sessionRef = useRef<LiveAvatarSession>(
-    new LiveAvatarSession(sessionAccessToken, config),
+}: HeyGenSessionProviderProps) => {
+  const [hasConsent, setHasConsent] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("heygen_consent_given") === "true";
+    }
+    return false;
+  });
+
+  const giveConsent = useCallback(() => {
+    setHasConsent(true);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("heygen_consent_given", "true");
+    }
+  }, []);
+
+  const [sessionAccessToken, setSessionAccessToken] = useState<string | null>(
+    null,
+  );
+  const [isSessionTokenLoading, setIsSessionTokenLoading] = useState(false);
+
+  const fetchSessionAccessToken = useCallback(async () => {
+    if (sessionAccessToken || isSessionTokenLoading) return;
+
+    setIsSessionTokenLoading(true);
+    try {
+      const response = await fetch("/api/start-session", { method: "POST" });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch HeyGen session token: ${response.statusText}`,
+        );
+      }
+      const data = await response.json();
+      setSessionAccessToken(data.session_token);
+    } catch (error) {
+      console.error("Error fetching HeyGen session token:", error);
+      setSessionAccessToken(null);
+    } finally {
+      setIsSessionTokenLoading(false);
+    }
+  }, [sessionAccessToken, isSessionTokenLoading]);
+
+  // Fetch token on mount if consent is given
+  useEffect(() => {
+    if (hasConsent && !sessionAccessToken && !isSessionTokenLoading) {
+      fetchSessionAccessToken();
+    }
+  }, [
+    hasConsent,
+    sessionAccessToken,
+    isSessionTokenLoading,
+    fetchSessionAccessToken,
+  ]);
+
+  const sessionRef = useRef<LiveAvatarSession | null>(null);
+
+  useEffect(() => {
+    // Validate NEXT_PUBLIC_HEYGEN_API_URL before initializing
+    const heygenApiUrl = process.env.NEXT_PUBLIC_HEYGEN_API_URL;
+    if (!heygenApiUrl) {
+      console.error(
+        "NEXT_PUBLIC_HEYGEN_API_URL is not set in environment variables.",
+      );
+      // Optionally, you could set an error state here to display to the user
+      return;
+    }
+
+    // Initialize LiveAvatarSession only if consent is given and token is available
+    if (hasConsent && sessionAccessToken && !sessionRef.current) {
+      const config = {
+        voiceChat: true, // Default voice chat on
+        apiUrl: heygenApiUrl,
+      };
+      sessionRef.current = new LiveAvatarSession(sessionAccessToken, config);
+      console.log("HeyGen LiveAvatarSession initialized.");
+
+      // Automatically start the session once initialized
+      sessionRef.current.start().catch((error) => {
+        console.error(
+          "Failed to start HeyGen LiveAvatarSession automatically:",
+          error,
+        );
+      });
+    }
+
+    return () => {
+      // Clean up session on unmount
+      if (
+        sessionRef.current &&
+        sessionRef.current.state !== SessionState.DISCONNECTED
+      ) {
+        sessionRef.current.stop();
+        console.log("HeyGen LiveAvatarSession stopped on unmount.");
+      }
+      sessionRef.current = null;
+    };
+  }, [hasConsent, sessionAccessToken]); // Re-run effect if consent or sessionAccessToken changes
+
+  const { sessionState, isStreamReady, connectionQuality } = useSessionState(
+    sessionRef as React.RefObject<LiveAvatarSession>,
   );
 
-  const { sessionState, isStreamReady, connectionQuality } =
-    useSessionState(sessionRef);
-
-  const { isMuted, voiceChatState } = useVoiceChatState(sessionRef);
-  const { isUserTalking, isAvatarTalking } = useTalkingState(sessionRef);
-  // const { messages } = useChatHistoryState(sessionRef);
+  const { isMuted, voiceChatState } = useVoiceChatState(
+    sessionRef as React.RefObject<LiveAvatarSession>,
+  );
+  const { isUserTalking, isAvatarTalking } = useTalkingState(
+    sessionRef as React.RefObject<LiveAvatarSession>,
+  );
 
   return (
-    <LiveAvatarContext.Provider
+    <HeyGenContext.Provider
       value={{
-        sessionRef,
+        sessionRef: sessionRef as React.RefObject<LiveAvatarSession>,
         sessionState,
         isStreamReady,
         connectionQuality,
@@ -206,13 +315,23 @@ export const LiveAvatarContextProvider = ({
         isUserTalking,
         isAvatarTalking,
         messages: [], // TODO - properly implement chat history
+        hasConsent,
+        giveConsent,
+        sessionAccessToken,
+        isSessionTokenLoading,
       }}
     >
       {children}
-    </LiveAvatarContext.Provider>
+    </HeyGenContext.Provider>
   );
 };
 
-export const useLiveAvatarContext = () => {
-  return useContext(LiveAvatarContext);
+export const useHeyGenContext = () => {
+  const context = useContext(HeyGenContext);
+  if (context === undefined) {
+    throw new Error(
+      "useHeyGenContext must be used within a HeyGenSessionProvider",
+    );
+  }
+  return context;
 };
