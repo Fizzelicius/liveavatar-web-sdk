@@ -1,14 +1,20 @@
 import "./globals.css";
+import ThemeRegistry from "../src/ThemeRegistry";
+
+export const metadata = {
+  title: "HeyGen Live Avatar Demo",
+  description: "A demonstration of the HeyGen Live Avatar Web SDK.",
+};
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html lang="en">
-      <body className="bg-zinc-900 flex flex-col min-h-screen text-white justify-center items-center">
-        {children}
+      <body>
+        <ThemeRegistry>{children}</ThemeRegistry>
       </body>
     </html>
   );
