@@ -1,6 +1,6 @@
 export const API_KEY = "cb0a8e6d-bed6-11f0-a99e-066a7fa2e369";
 export const API_URL = "https://api.liveavatar.com";
-export const AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a";
+export const AVATAR_ID = "64b526e4-741c-43b6-a918-4e40f3261c7a";
 
 // FULL MODE Customizations
 // Wayne's avatar voice and context
